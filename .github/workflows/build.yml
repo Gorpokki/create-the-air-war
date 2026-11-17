@@ -150,11 +150,6 @@ jobs:
           "$JAVA_HOME_21_X64/bin/javap" -p -cp client/.mixin.out/class net.minecraft.client.multiplayer.ClientChunkCache \
             | grep -F 'ctaw$acceptRemoteChunk' || { echo 'The chunk cache mixin did not apply.'; exit 1; }
           grep -F 'Successfully finished.' client.log
-      # Runs even when an earlier step failed or timed out, so no game or X server outlives the job.
-      # The [x] brackets keep pkill from matching this step's own command line.
-      - name: Kill leftover game processes
-        if: ${{ always() }}
-        run: pkill -f '[h]eadlessmc|[X]vfb|[n]et.minecraft' || true
       - name: Keep the client log
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
