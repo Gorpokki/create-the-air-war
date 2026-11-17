@@ -96,9 +96,7 @@ jobs:
       - name: Scan workflow files with zizmor
         if: ${{ !(startsWith(github.head_ref, 'sync/') && github.event.pull_request.head.repo.full_name == github.repository) && !cancelled() }}
         run: |
-          rc=0
-          zizmor --no-progress --format sarif .github/workflows > "$RUNNER_TEMP/zizmor.sarif" || rc=$?
-          [ "$rc" -le 1 ] || exit "$rc"
+          zizmor --no-progress --format sarif .github/workflows > "$RUNNER_TEMP/zizmor.sarif"
       - name: Check workflow security findings on changed lines
         if: ${{ !(startsWith(github.head_ref, 'sync/') && github.event.pull_request.head.repo.full_name == github.repository) && !cancelled() }}
         uses: Gorpokki/minecraft-mod-actions/sarif-changed-lines@fca1c54653822990b918578721acade3c732513b # v1.1.0
