@@ -36,7 +36,7 @@ jobs:
       - name: Trust the workspace for git
         if: ${{ !(startsWith(github.head_ref, 'sync/') && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The recorded fork tip is informational; score each PR against its merge base.
+      # Score against the merge base. The recorded baseline is used only when it is an upstream-intake snapshot on this branch, i.e. an ancestor of HEAD but not of the merge base.
       - name: Pick the base to diff from
         if: ${{ !(startsWith(github.head_ref, 'sync/') && github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
@@ -48,11 +48,16 @@ jobs:
             exit 1
           }
           [ -n "$mb" ] || { echo 'The pull request merge base is empty.' >&2; exit 1; }
-          if ! git merge-base --is-ancestor "$sha" HEAD; then
+          base=$mb
+          if git merge-base --is-ancestor "$sha" HEAD; then
+            if ! git merge-base --is-ancestor "$sha" "$mb"; then
+              base=$sha
+            fi
+          else
             echo '::warning::Quality baseline is not an ancestor of HEAD; using the merge base.'
           fi
-          echo "BASE=$mb" >> "$GITHUB_ENV"
-          echo "Diffing against the pull request merge base: $mb"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "Diffing against: $base"
       - name: Install Qlty CLI 0.652.0, poutine 1.1.6, jq 1.8.2 and zizmor 1.30.1
         if: ${{ !(startsWith(github.head_ref, 'sync/') && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
