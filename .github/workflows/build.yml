@@ -147,6 +147,7 @@ jobs:
           # The chunk cache mixin rewrites this client class, so its transformed copy holds the injected method.
           transformed=client/.mixin.out/class/net/minecraft/client/multiplayer/ClientChunkCache.class
           test -f "$transformed" || { echo 'The client chunk cache was never transformed by the mod mixin.'; exit 1; }
+          # shellcheck disable=SC2016  # the $ in the method name is literal
           "$JAVA_HOME_21_X64/bin/javap" -p -cp client/.mixin.out/class net.minecraft.client.multiplayer.ClientChunkCache \
             | grep -F 'ctaw$acceptRemoteChunk' || { echo 'The chunk cache mixin did not apply.'; exit 1; }
           grep -F 'Successfully finished.' client.log
