@@ -1,25 +1,242 @@
-name: Build
+name: CI
 
-on: [push, pull_request]
+# Linux runners only: the jar builds here, then a headless client and a dedicated
+# server each load it with the mods it requires and nothing else.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build the mod jar
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Setup JDK 21
-        uses: actions/setup-java@v4
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
+          distribution: temurin
           java-version: '21'
-          distribution: 'temurin'
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Build the jar and run the tests
+        run: ./gradlew --no-daemon build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mod-jar
+          if-no-files-found: error
+          path: build/libs/create_the_air_wars-[0-9]*.jar
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+  client:
+    name: Start the client with the built jar
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # The HeadlessMC 2.10.0 image (https://hub.docker.com/r/3arthqu4ke/headlessmc) holds the launcher in /headlessmc.
+    container:
+      image: 3arthqu4ke/headlessmc:2.10.0@sha256:4886bc1bc2247dab7161eb6da8cbd74b7144a4cfd207fab574f1a561f674a09b
+    defaults:
+      run:
+        shell: bash
+    env:
+      NEOFORGE: 21.1.248
+      NEOFORGE_SHA256: 68eeab77059ba53df1812f1afa5bf530ab2566a3cdcd5f924aa6e71be42e410c
+      CREATE_URL: https://cdn.modrinth.com/data/LNytGWDc/versions/UjX6dr61/create-1.21.1-6.0.10.jar
+      CREATE_SHA256: ef87fe5709f1ba1f5b8bb20a2925b5afb4669e178fd6d8bf10c167759eefe37a
+      AERONAUTICS_URL: https://cdn.modrinth.com/data/oWaK0Q19/versions/44pLdPGg/create-aeronautics-bundled-1.21.1-1.3.2.jar
+      AERONAUTICS_SHA256: a3f330d4757640f8715d991a43eedb826e4d0e51558d859c843ae6693bd35f1e
+      SABLE_URL: https://cdn.modrinth.com/data/T9PomCSv/versions/fg9dTRz9/sable-neoforge-1.21.1-2.0.6.jar
+      SABLE_SHA256: 9c199157843bf953a47dff625fc5bb41c01a90538d35ad18e6996bbcb8a617c2
+      VEIL_URL: https://cdn.modrinth.com/data/3KUWeVhG/versions/1Kzi5Vp0/veil-neoforge-1.21.1-4.4.1.jar
+      VEIL_SHA256: 2ff0bf91152612734fc35856e90da24024cd9f919fb94572536d96cc50c8baef
+      # mc-runtime-test opens a new single-player world, waits for the player's chunk and 100 ticks, then quits.
+      MCRT_URL: https://github.com/headlesshq/mc-runtime-test/releases/download/4.5.1/mc-runtime-test-1.21.1-4.5.1-neoforge-release.jar
+      MCRT_SHA256: 404e566645730470dc873db88c28d483995c9b7bb6999a6a2af9630a41bf7774
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mod-jar
+          path: build/libs
+      - name: Install a NeoForge client with the mod and the mods it requires
+        run: |
+          # The client renders to Xvfb with Mesa software GL instead of the HeadlessMC -lwjgl no-op patch,
+          # which reports 0 vertex attributes and breaks renderers that ask the driver for its limits.
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends procps xvfb xauth x11-xserver-utils \
+            libgl1 libglx-mesa0 libgl1-mesa-dri libxcursor1 libxrandr2 libxi6 libxxf86vm1 libxtst6 > /dev/null
+          mc="$RUNNER_TEMP/minecraft"
+          mkdir -p "$RUNNER_TEMP/dl" "$mc" client/mods
+          cd "$RUNNER_TEMP/dl"
+          curl -fsSLo neoforge-installer.jar "https://maven.neoforged.net/releases/net/neoforged/neoforge/$NEOFORGE/neoforge-$NEOFORGE-installer.jar"
+          curl -fsSLo create.jar "$CREATE_URL"
+          curl -fsSLo aeronautics.jar "$AERONAUTICS_URL"
+          curl -fsSLo sable.jar "$SABLE_URL"
+          curl -fsSLo veil.jar "$VEIL_URL"
+          curl -fsSLo mc-runtime-test.jar "$MCRT_URL"
+          echo "$NEOFORGE_SHA256  neoforge-installer.jar" | sha256sum -c
+          echo "$CREATE_SHA256  create.jar" | sha256sum -c
+          echo "$AERONAUTICS_SHA256  aeronautics.jar" | sha256sum -c
+          echo "$SABLE_SHA256  sable.jar" | sha256sum -c
+          echo "$VEIL_SHA256  veil.jar" | sha256sum -c
+          echo "$MCRT_SHA256  mc-runtime-test.jar" | sha256sum -c
+          # The installer refuses a directory without a launcher profile file.
+          echo '{"profiles":{}}' > "$mc/launcher_profiles.json"
+          java -jar neoforge-installer.jar --installClient "$mc"
+          cd "$GITHUB_WORKSPACE"
+          cp "$RUNNER_TEMP/dl"/*.jar client/mods/
+          rm client/mods/neoforge-installer.jar
+          cp build/libs/create_the_air_wars-[0-9]*.jar client/mods/
+          printf '%s\n' 'onboardAccessibility:false' 'pauseOnLostFocus:false' > client/options.txt
+          # FML 4.0.43 reloads fml.toml during mod discovery while the early loading screen thread reads it, so the screen can
+          # read a half-loaded config and throw a NullPointerException. The smoke test needs no loading screen, so turn it off.
+          mkdir -p client/config
+          echo 'earlyWindowControl = false' > client/config/fml.toml
+          mkdir -p HeadlessMC
+          printf '%s\n' \
+            "hmc.java.versions=$JAVA_HOME_21_X64/bin/java" \
+            'hmc.java.use.current=false' \
+            'hmc.auto.download.java=false' \
+            "hmc.gamedir=$GITHUB_WORKSPACE/client" \
+            "hmc.mcdir=$mc" \
+            'hmc.offline=true' \
+            'hmc.assets.dummy=true' \
+            'hmc.rethrow.launch.exceptions=true' \
+            'hmc.exit.on.failed.command=true' \
+            'hmc.jvmargs=-Xmx3G -Dmixin.debug.verify=true -Dmixin.debug.export=true -DMcRuntimeGameTest=false' \
+            > HeadlessMC/config.properties
+      # The jar is in the mods folder before the client starts, so a crash on mod load or on the first sky frame fails here.
+      - name: Start the client, open a single-player world, then quit
+        timeout-minutes: 25
+        run: |
+          JAVA_HOME="$JAVA_HOME_21_X64" xvfb-run -a "$JAVA_HOME_21_X64/bin/java" -Dhmc.check.xvfb=true -jar /headlessmc/headlessmc-launcher-*.jar \
+            --command launch "neoforge-$NEOFORGE" 2>&1 | tee client.log
+      - name: Check the client log and the mixin transform
+        run: |
+          grep -m1 -F 'java version 21' client.log
+          if grep -nE 'Mixin apply .*failed|InvalidMixinException|MixinApplyError|Mixin transformation of .* failed' client.log; then
+            echo 'A mixin failed to apply (lines above).'
+            exit 1
+          fi
+          crashes=$(ls client/crash-reports/*.txt 2>/dev/null || true)
+          if [ -n "$crashes" ]; then
+            echo 'The client wrote a crash report:'
+            cat client/crash-reports/*.txt
+            exit 1
+          fi
+          # The mod registers this common config when its constructor runs, so the file exists only when the jar was loaded.
+          test -f client/config/create_the_air_wars-server.toml || { echo 'The mod config was never written, so the jar was not loaded.'; exit 1; }
+          # The chunk cache mixin rewrites this client class, so its transformed copy holds the injected method.
+          transformed=client/.mixin.out/class/net/minecraft/client/multiplayer/ClientChunkCache.class
+          test -f "$transformed" || { echo 'The client chunk cache was never transformed by the mod mixin.'; exit 1; }
+          "$JAVA_HOME_21_X64/bin/javap" -p -cp client/.mixin.out/class net.minecraft.client.multiplayer.ClientChunkCache \
+            | grep -F 'ctaw$acceptRemoteChunk' || { echo 'The chunk cache mixin did not apply.'; exit 1; }
+          grep -F 'Successfully finished.' client.log
+      # Runs even when an earlier step failed or timed out, so no game or X server outlives the job.
+      # The [x] brackets keep pkill from matching this step's own command line.
+      - name: Kill leftover game processes
+        if: ${{ always() }}
+        run: pkill -f '[h]eadlessmc|[X]vfb|[n]et.minecraft' || true
+      - name: Keep the client log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: client-smoke
+          retention-days: 7
+          path: |
+            client.log
+            client/logs/
+            client/crash-reports/
 
-      - name: Build with Gradle
-        run: ./gradlew build
+  server:
+    name: Boot a dedicated server with the built jar
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      NEOFORGE: 21.1.248
+      NEOFORGE_SHA256: 68eeab77059ba53df1812f1afa5bf530ab2566a3cdcd5f924aa6e71be42e410c
+      CREATE_URL: https://cdn.modrinth.com/data/LNytGWDc/versions/UjX6dr61/create-1.21.1-6.0.10.jar
+      CREATE_SHA256: ef87fe5709f1ba1f5b8bb20a2925b5afb4669e178fd6d8bf10c167759eefe37a
+      AERONAUTICS_URL: https://cdn.modrinth.com/data/oWaK0Q19/versions/44pLdPGg/create-aeronautics-bundled-1.21.1-1.3.2.jar
+      AERONAUTICS_SHA256: a3f330d4757640f8715d991a43eedb826e4d0e51558d859c843ae6693bd35f1e
+      SABLE_URL: https://cdn.modrinth.com/data/T9PomCSv/versions/fg9dTRz9/sable-neoforge-1.21.1-2.0.6.jar
+      SABLE_SHA256: 9c199157843bf953a47dff625fc5bb41c01a90538d35ad18e6996bbcb8a617c2
+      VEIL_URL: https://cdn.modrinth.com/data/3KUWeVhG/versions/1Kzi5Vp0/veil-neoforge-1.21.1-4.4.1.jar
+      VEIL_SHA256: 2ff0bf91152612734fc35856e90da24024cd9f919fb94572536d96cc50c8baef
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mod-jar
+          path: build/libs
+      - name: Install a NeoForge server with the mod and the mods it requires
+        run: |
+          mkdir -p "$RUNNER_TEMP/dl" server/mods
+          cd "$RUNNER_TEMP/dl"
+          curl -fsSLo neoforge-installer.jar "https://maven.neoforged.net/releases/net/neoforged/neoforge/$NEOFORGE/neoforge-$NEOFORGE-installer.jar"
+          curl -fsSLo create.jar "$CREATE_URL"
+          curl -fsSLo aeronautics.jar "$AERONAUTICS_URL"
+          curl -fsSLo sable.jar "$SABLE_URL"
+          curl -fsSLo veil.jar "$VEIL_URL"
+          echo "$NEOFORGE_SHA256  neoforge-installer.jar" | sha256sum -c
+          echo "$CREATE_SHA256  create.jar" | sha256sum -c
+          echo "$AERONAUTICS_SHA256  aeronautics.jar" | sha256sum -c
+          echo "$SABLE_SHA256  sable.jar" | sha256sum -c
+          echo "$VEIL_SHA256  veil.jar" | sha256sum -c
+          cd "$GITHUB_WORKSPACE/server"
+          java -jar "$RUNNER_TEMP/dl/neoforge-installer.jar" --installServer .
+          cp "$RUNNER_TEMP/dl"/*.jar mods/
+          rm mods/neoforge-installer.jar
+          cp ../build/libs/create_the_air_wars-[0-9]*.jar mods/
+          echo 'eula=true' > eula.txt
+          printf '%s\n' 'level-type=minecraft\:flat' 'online-mode=false' 'difficulty=easy' > server.properties
+          printf '%s\n' '-Xmx3G' '-Dmixin.debug.verify=true' '-Dmixin.debug.export=true' >> user_jvm_args.txt
+      # The action starts the server, waits for the ready line, sends stop, fails on a mixin or crash line, and always kills leftovers.
+      - name: Boot the server, then stop it
+        uses: Gorpokki/minecraft-mod-actions/server-boot@fca1c54653822990b918578721acade3c732513b # v1.1.0
+        with:
+          server-dir: server
+          start-command: ./run.sh nogui
+      - name: Check the server loaded and transformed the mod
+        run: |
+          # The mod registers this config at load, so the file exists only when the jar was loaded.
+          test -f server/config/create_the_air_wars-server.toml || { echo 'The mod config was never written, so the jar was not loaded.'; exit 1; }
+          # The chunk tracking mixin rewrites this server class, so its transformed copy exists after a boot.
+          test -f server/.mixin.out/class/net/minecraft/server/level/ChunkMap.class || { echo 'The server chunk map was never transformed by the mod mixin.'; exit 1; }
+          grep -F 'Done (' server/server.log | head -n 1
+      - name: Keep the server log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-boot
+          retention-days: 7
+          path: |
+            server/server.log
+            server/logs/
+            server/crash-reports/
